@@ -267,9 +267,8 @@ void write_request(char *file_name, char *data, char *pipeName)
     fprintf(fd, "%s", data);
     fprintf(fd, "%s", "\n");
 
-
     sprintf(response, "Successfully wrote to file %s", file_name);
-    _write(pipeName,response);
+    _write(pipeName, response);
     fclose(fd);
 }
 
