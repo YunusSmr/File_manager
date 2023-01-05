@@ -1,53 +1,85 @@
 #include <stdio.h>
-#include <unistd.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <errno.h>
 
-#define BUFSIZE 100
-#define PIPE_NAME "named_pipe"
+#define PIPE_NAME "/tmp/named_pipe"
+#define BUFSIZE 1024
 
-int main(int argc, char **argv)
+char buffer[BUFSIZE];
+
+int _write(char *pipeName, char *msg)
 {
+    int fd = open(pipeName, O_WRONLY);
+    if (fd < 0)
+    {
+        perror("couldnt open pipe");
+        return -1;
+    }
 
-    char buf[BUFSIZE];
+    if (write(fd, msg, strlen(msg) + 1) < 0)
+    {
+        perror("couldnt write buffer from pipe");
+        return -1;
+    }
+    close(fd);
+    return 0;
+}
+
+int _read(char *pipeName)
+{
+    int fd = open(pipeName, O_RDONLY);
+    if (fd < 0)
+    {
+        perror("couldnt open pipe");
+        return -1;
+    }
+    size_t len = read(fd, buffer, BUFSIZE);
+    if (len < 0)
+    {
+        perror("couldnt read to pipe");
+        return -1;
+    }
+    close(fd);
+
+    return len;
+}
+
+int main()
+{
+    // connect to main pipe
+    _write(PIPE_NAME, "connect to main pipe");
+
+    size_t pipeNameLen = _read(PIPE_NAME);
+    char pipeName[pipeNameLen];
+
+    strcpy(pipeName, buffer);
+
+    if (strcmp("too much client", pipeName) == 0)
+    {
+        printf("wait other client until done...try again ");
+        return 0;
+    }
+
+    // get commands and write to pipe
     while (1)
     {
-        // Kullanıcıdan komut alınır
         printf(" create <file_name> \n delete <file_name> \n read <file_name> \n write <file_name> <data> \n exit \n Enter command: ");
-        fgets(buf, BUFSIZE, stdin);
-        buf[strcspn(buf, "\n")] = '\0';
-        // Named pipe açılır
-        int fd = open(PIPE_NAME, O_WRONLY);
-        // Komut server'a gönderilir
-        write(fd, buf, strlen(buf) + 1);
-        // Named pipe kapatılır
-        close(fd);
-        // Server'dan cevap alınır
-        int bytes_read = read(fd, buf, BUFSIZE);
-
-        buf[bytes_read] = '\0';
-
-        if (strcmp(buf, "error: invalid command") == 0 || strcmp(buf, "error: file not found") == 0 || strcmp(buf, "error: file list is full") == 0)
+        fgets(buffer, BUFSIZE, stdin);
+        buffer[strcspn(buffer, "\n")] = '\0';
+        _write(pipeName, buffer);
+        if (strcmp(buffer, "exit") == 0)
         {
-            printf("Response: %s\n", buf);
-            // Geçersiz komut veya dosya bulunamadı durumlarında program sonlandırılır
-            continue;
-        }
-        else if (strcmp(buf, "exit") == 0)
-        {
-            printf("Response: %s\n", buf);
             break;
-            // Başarılı işlemlerde ve 'exit' komutuyla program devam eder
         }
         else
         {
-            // 'read' komutuyla server'dan okunan veri ekrana yazdırılır
-            int bytes_read = read(fd, buf, BUFSIZE);
-            buf[bytes_read] = '\0';
-            printf("Response: %s\n", buf);
+            // prints response from manager
+            _read(pipeName);
+            printf("\n---> Response: %s\n\n", buffer);
         }
     }
 

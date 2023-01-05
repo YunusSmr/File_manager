@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <sys/types.h>
@@ -6,261 +7,366 @@
 #include <fcntl.h>
 #include <pthread.h>
 
-#define PIPE_NAME "named_pipe"
+// variables
+#define PIPE_NAME "/tmp/named_pipe"
 #define MAX_THREADS 5
-
-// Dosya listesi dizisi
-char file_list[10][1024];
+#define MAX_FILES 10
+#define BUFSIZE 1024
 
 // Lock mekanizması
 pthread_mutex_t lock;
 
-void *handle_client_request(void *arg)
-{
-    int *client_pipefd = (int *)arg;
+char response[BUFSIZE];
 
-    char buffer[1024]; // İstekleri okumak için buffer
+// functions signuture
+void open_mPipe(char *pipeName);
+int _read(char *pipeName, char *buffer);
+int _write(char *pipeName, char *msg);
+void get_commands();
+void *handle_client_request(void *arg);
+void create_request(char *file_name, char *pipeName);
+void delete_request(char *file_name, char *pipeName);
+void read_request(char *file_name, char *pipeName);
+void write_request(char *file_name, char *data, char *pipeName);
+int index_file(char *fileName);
+int empty_index();
+int isExist(char *fileName);
+
+// Gerekli yerlerde struct, fonksiyonlar, thread, lock mekanizmaları kullanılarak yapılacaktır.
+typedef struct
+{
+    pthread_t thread;
+    char *name;
+    int status;
+} Pipe;
+
+// pipeList
+Pipe pipeList[MAX_THREADS];
+
+// file_list
+char *file_list[MAX_FILES];
+
+// open main pipe with mkfifo
+void open_mPipe(char *pipeName)
+{
+    // if exist unlink before create
+    unlink(pipeName);
+    if (mkfifo(pipeName, 0666) < 0)
+    {
+        perror("mkfifo");
+        exit(1);
+    }
+}
+
+// Find an empty index in the file_list
+int empty_index()
+{
+
+    for (int i = 0; i < MAX_FILES; i++)
+    {
+        if (file_list[i] == NULL)
+        {
+            return i;
+        }
+    }
+    // If no empty index , return -1
+    return -1;
+}
+
+// returns index of filename
+int index_file(char *fileName)
+{
+    for (int i = 0; i < MAX_FILES; i++)
+    {
+        if (file_list[i] && strcmp(file_list[i], fileName) == 0)
+        {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+// check an file exist or not, if true return 1
+int isExist(char *fileName)
+{
+    for (int i = 0; i < MAX_FILES; i++)
+    {
+        if (file_list[i] != NULL && strcmp(file_list[i], fileName) == 0)
+        {
+            printf("file has found\n");
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// handles client request
+void *handle_client_request(void *index)
+{
+
+    int *i = (int *)index;
+    char *pipeName = pipeList[*i].name;
+
+    printf("%s connected to manager \n", pipeName);
+    char file_name[100];
+
+    char data[1024];
+    char command[1024];
+    char buffer[BUFSIZE];
+
+    open_mPipe(pipeName);
 
     while (1)
     {
-        // Pipe'dan istek oku
-        int num_bytes_read = read(*client_pipefd, buffer, 1024);
-        if (num_bytes_read == -1)
-        {
-            perror("Error reading from pipe");
-            break;
-        }
-        close(client_pipefd);
-        // Pipe'ı aç
-        // client_pipefd = open("named_pipe", O_WRONLY);
-        // İstek içeriğini parse et
-        char command[1024];
-        char file_name[1024];
-        char data[1024];
-        sscanf(buffer, "%s %s %s", command, file_name, data);
+        _read(pipeName, buffer);
 
-        // Lock mekanizmasını kullanarak dosya listesi dizisini güncelle
-        // pthread_mutex_lock(&lock);
+        sscanf(buffer, "%s %s %s", command, file_name, data);
+        printf("\n--->Request: %s\n\ncommand: %s\nfileName: %s \ndata : %s\n", buffer, command, file_name, data);
         if (strcmp(command, "create") == 0)
         {
-            printf("command: %s\nfileName: %s \ndata : %s \n ", command, file_name, data);
-
-            // Boş olan bir sırayı bul
-            int index = -1;
-            for (int i = 0; i < 10; i++)
-            {
-                if (strlen(file_list[i]) == 0)
-                {
-                    index = i;
-                    break;
-                }
-            }
-
-            if (index == -1)
-            {
-                // Boş sıra yok
-                sprintf(buffer, "Error: file list is full");
-            }
-            else
-            {
-                // Dosya ismini dosya listesi dizisine ekle
-                strcpy(file_list[index], file_name);
-
-                // Dosyayı oluştur
-                int fd = open(file_name, O_CREAT | O_WRONLY, 0666);
-                close(fd);
-
-                // Cevap oluştur
-                sprintf(buffer, "Successfully created file %s", file_name);
-                // write(*client_pipefd, buffer, strlen(buffer) + 1);
-            }
+            pthread_mutex_lock(&lock);
+            create_request(file_name, pipeName);
+            pthread_mutex_unlock(&lock);
         }
         else if (strcmp(command, "delete") == 0)
         {
-            sscanf(buffer, "%s %s %s", command, file_name, data);
-            // Dosya listesi dizisinde dosya ismini arama
-            int index = -1;
-            for (int i = 0; i < 10; i++)
-            {
-                if (strcmp(file_list[i], file_name) == 0)
-                {
-                    index = i;
-                    break;
-                }
-            }
-
-            if (index == -1)
-            {
-                // Dosya ismi bulunamadı
-                sprintf(buffer, "Error: file not found");
-            }
-            else
-            {
-                // Dosya ismini dosya listesi dizisinden sil
-                strcpy(file_list[index], "");
-
-                // Dosyayı sil
-                unlink(file_name);
-
-                // Cevap oluştur
-                sprintf(buffer, "Successfully deleted file %s", file_name);
-            }
+            pthread_mutex_lock(&lock);
+            delete_request(file_name, pipeName);
+            pthread_mutex_unlock(&lock);
         }
         else if (strcmp(command, "read") == 0)
         {
-            // Dosya listesi dizisinde dosya ismini arama
-            int index = -1;
-            for (int i = 0; i < 10; i++)
-            {
-                if (strcmp(file_list[i], file_name) == 0)
-                {
-                    index = i;
-                    break;
-                }
-            }
-            if (index == -1)
-            {
-                // Dosya ismi bulunamadı
-                sprintf(buffer, "Error: file not found");
-            }
-            else
-            {
-                // Dosyayı oku
-                int fd = open(file_name, O_RDONLY);
-                if (fd == -1)
-                {
-                    sprintf(buffer, "Error: failed to open file");
-                }
-                else
-                {
-                    // Dosyadan okunacak veri miktarını hesapla
-                    int num_bytes_to_read = data;
-                    if (num_bytes_to_read > 1024)
-                    {
-                        num_bytes_to_read = 1024;
-                    }
+            pthread_mutex_lock(&lock);
 
-                    // Veriyi oku
-                    int num_bytes_read = read(fd, buffer, num_bytes_to_read);
-                    if (num_bytes_read == -1)
-                    {
-                        perror("Error reading from file");
-                        sprintf(buffer, "Error: failed to read file");
-                    }
-                    else
-                    {
-                        // Okunan veriyi null-terminate et
-                        buffer[num_bytes_read] = '\0';
-                    }
-
-                    close(fd);
-                }
-            }
+            read_request(file_name, pipeName);
+            pthread_mutex_unlock(&lock);
         }
         else if (strcmp(command, "write") == 0)
         {
-
-            // Dosya listesi dizisinde dosya ismini arama
-            int index = -1;
-            for (int i = 0; i < 10; i++)
-            {
-                if (strcmp(file_list[i], file_name) == 0)
-                {
-                    index = i;
-                    printf("index: %d\n", index);
-                    break;
-                }
-            }
-            if (index == -1)
-            {
-                // Dosya ismi bulunamadı
-                sprintf(buffer, "Error: file not found");
-            }
-            else
-            {
-                // Dosyayı aç
-                int fd = fopen(file_name, "a");
-                if (fd == -1)
-                {
-                    sprintf(buffer, "Error: failed to open file");
-                }
-                else
-                {
-
-                    // Veriyi dosyaya yaz
-                    fprintf(fd, "%s\n", data);
-                    // write(fd, file_name, data);
-
-                    // Cevap oluştur
-                    sprintf(buffer, "Successfully wrote %d bytes to file %s", file_name);
-
-                    close(fd);
-                }
-            }
+            pthread_mutex_lock(&lock);
+            write_request(file_name, data, pipeName);
+            pthread_mutex_unlock(&lock);
         }
         else if (strcmp(command, "exit") == 0)
         {
-            // Thread'i bitir
+            printf("%s disconnected from manager \n", pipeName);
+            pipeList[*i].status = 0;
             break;
         }
         else
         {
-            // Geçersiz komut
-            sprintf(buffer, "Error: invalid command");
-            // Cevabı pipe'a yaz
-            // write(*client_pipefd, buffer, 1024);
+            _write(pipeName, "Error: invalid command");
+            printf("Error--invalid command: %s\n", command);
+        }
+    }
+    free(index);
+    return NULL;
+}
+
+// handles create request
+void create_request(char *file_name, char *pipeName)
+{
+    if (strlen(file_name) <= 0)
+    {
+        _write(pipeName, "write an exceptable file name!");
+        return;
+    }
+
+    if (isExist(file_name))
+    {
+        _write(pipeName, "file is already exist");
+        return;
+    }
+
+    int index = empty_index();
+
+    if (index == -1)
+    {
+        _write(pipeName, "Error: file list is full");
+        return;
+    }
+
+    file_list[index] = (char *)malloc(1024);
+    memcpy(file_list[index], file_name, strlen(file_name) + 1);
+
+    FILE *fp = fopen(file_name, "w");
+    if (fp == NULL)
+    {
+        perror("fopen");
+        exit(1);
+    }
+    fclose(fp);
+    sprintf(response, "Successfully created file %s", file_name);
+    _write(pipeName, response);
+}
+
+// handles delete request
+void delete_request(char *file_name, char *pipeName)
+{
+    int index = index_file(file_name);
+    if (index == -1)
+    {
+        _write(pipeName, "Error: file not found");
+        return;
+    }
+
+    free(file_list[index]);
+    file_list[index] = NULL;
+
+    unlink(file_name);
+    sprintf(response, "Successfully deleted file %s", file_name);
+    _write(pipeName, response);
+}
+
+// handles read request
+void read_request(char *file_name, char *pipeName)
+{
+    if (!isExist(file_name))
+    {
+        _write(pipeName, "Error: file not found");
+        return;
+    }
+    FILE *fd;
+    fd = fopen(file_name, "r");
+    if (!fd)
+    {
+        _write(pipeName, "Error: failed to open file");
+        return;
+    }
+
+    char data[256];
+    int index = 0;
+    char c;
+    while ((c = fgetc(fd)) != EOF)
+    {
+        data[index++] = c;
+    }
+    data[index] = '\0';
+    sprintf(response, "readed data : %s", data);
+    _write(pipeName, response);
+}
+
+// handles write request
+void write_request(char *file_name, char *data, char *pipeName)
+{
+
+    if (!isExist(file_name))
+    {
+        _write(pipeName, "Error: file not found");
+        return;
+    }
+    FILE *fd;
+    fd = fopen(file_name, "a");
+    if (!fd)
+    {
+        _write(pipeName, "Error: failed to open file");
+        return;
+    }
+
+    fprintf(fd, "%s", data);
+    fprintf(fd, "%s", "\n");
+
+
+    sprintf(response, "Successfully wrote to file %s", file_name);
+    _write(pipeName,response);
+    fclose(fd);
+}
+
+// writes to pipeName and close it
+int _write(char *pipeName, char *msg)
+{
+    int fd = open(pipeName, O_WRONLY);
+    if (fd < 0)
+    {
+        perror("couldnt open pipe");
+        return -1;
+    }
+
+    if (write(fd, msg, strlen(msg) + 1) < 0)
+    {
+        perror("couldnt write buffer from pipe");
+        return -1;
+    }
+    close(fd);
+    return 0;
+}
+
+// writes from pipeName and close it
+int _read(char *pipeName, char *buffer)
+{
+    int fd = open(pipeName, O_RDONLY);
+    if (fd < 0)
+    {
+        perror("couldnt open pipe");
+        return -1;
+    }
+    size_t len = read(fd, buffer, BUFSIZE);
+    if (len < 0)
+    {
+        perror("couldnt read to pipe");
+        return -1;
+    }
+    close(fd);
+
+    return len;
+}
+
+// get commands from clients
+void get_commands()
+{
+
+    while (1)
+    {
+        char command[BUFSIZE];
+        _read(PIPE_NAME, command);
+        int connectionStatus = 0;
+        for (size_t i = 0; i < MAX_THREADS; i++)
+        {
+            if (!pipeList[i].status)
+            {
+                _write(PIPE_NAME, pipeList[i].name);
+                int *param = malloc(sizeof(int));
+                *param = i;
+                pthread_create(&pipeList[i].thread, NULL, handle_client_request, param);
+                pipeList[i].status = 1;
+                connectionStatus = 1;
+                break;
+            }
         }
 
-        // Lock mekanizmasını serbest bırak
-        // pthread_mutex_unlock(&lock);
+        if (!connectionStatus)
+        {
+            printf("too much client\n");
+            _write(PIPE_NAME, "too much client");
+        }
     }
-    close(client_pipefd);
-
-    return NULL;
 }
 
 int main()
 {
-    // Named pipe'ı oluştur
-    mkfifo("named_pipe", 0666);
-
-    // Lock mekanizmasını oluştur
     pthread_mutex_init(&lock, NULL);
 
-    // Dosya listesi dizisini sıfırla
-    memset(file_list, 0, sizeof(file_list));
-
-    // Threadleri tutacak dizi
-    pthread_t threads[MAX_THREADS];
-    int thread_count = 0;
-
-    while (1)
+    for (size_t i = 0; i < MAX_FILES; i++)
     {
-        // Pipe'ı aç
-        int named_pipe_fd = open("named_pipe", O_RDONLY);
-        if (named_pipe_fd == -1)
-        {
-            perror("Error opening named pipe");
-            return 1;
-        }
-
-        // Thread oluştur
-        pthread_create(&threads[thread_count], NULL, handle_client_request, (void *)&named_pipe_fd);
-        thread_count++;
-
-        // Maksimum thread sayısına ulaşıldıysa, bekle
-        if (thread_count == MAX_THREADS)
-        {
-            thread_count = 0;
-        }
-        for (int i = 0; i < MAX_THREADS; i++)
-        {
-            pthread_join(threads[i], NULL);
-        }
+        file_list[i] = NULL;
     }
 
-    // Lock mekanizmasını temizle
-    pthread_mutex_destroy(&lock);
+    // open main pipe
+    open_mPipe(PIPE_NAME);
 
+    for (int i = 0; i < MAX_THREADS; i++)
+    {
+        pipeList[i].status = 0;
+        char *name = malloc(25);
+        sprintf(name, "%d.pipe", i);
+        printf("%s has created \n", name);
+        pipeList[i].name = name;
+    }
+
+    // waits for commands from clients
+    get_commands();
+
+    pthread_mutex_destroy(&lock);
     return 0;
 }
